@@ -1,120 +1,89 @@
 """
-Хранение персонажей и состояния игры (GameDirector) в SQLite.
-Единое соединение для потокобезопасности в asyncio.
+База данных SQLite для D&D Bot.
+Хранит персонажей и состояние режиссёра (director) по chat_id.
 """
 
-import sqlite3
 import json
+import sqlite3
+import logging
+from typing import Optional
+
+log = logging.getLogger("dnd-bot.db")
 
 
 class Database:
-    def __init__(self, db_path: str = "dnd_bot.db"):
-        self.db_path = db_path
-        self._conn = sqlite3.connect(db_path, check_same_thread=False)
+    def __init__(self, db_path: str = "/tmp/dnd_bot.db"):
+        self.path = db_path
         self._init_db()
 
+    def _conn(self):
+        conn = sqlite3.connect(self.path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
     def _init_db(self):
-        self._conn.execute("""
-            CREATE TABLE IF NOT EXISTS characters (
-                user_id    INTEGER PRIMARY KEY,
-                char_data  TEXT NOT NULL,
-                updated_at TEXT DEFAULT (datetime('now'))
-            )
-        """)
-        self._conn.execute("""
-            CREATE TABLE IF NOT EXISTS game_state (
-                chat_id    INTEGER PRIMARY KEY,
-                state_data TEXT NOT NULL,
-                updated_at TEXT DEFAULT (datetime('now'))
-            )
-        """)
-        self._conn.commit()
+        with self._conn() as c:
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS characters (
+                    user_id INTEGER PRIMARY KEY,
+                    data    TEXT NOT NULL
+                )
+            """)
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS directors (
+                    chat_id INTEGER PRIMARY KEY,
+                    data    TEXT NOT NULL
+                )
+            """)
+            c.commit()
 
     # ─── Персонажи ────────────────────────────────────────
 
-    def save_character(self, user_id: int, char) -> None:
-        self._conn.execute(
-            """INSERT INTO characters (user_id, char_data, updated_at)
-               VALUES (?, ?, datetime('now'))
-               ON CONFLICT(user_id) DO UPDATE SET
-                 char_data = excluded.char_data,
-                 updated_at = datetime('now')""",
-            (user_id, json.dumps(char.to_dict())),
-        )
-        self._conn.commit()
+    def get_character(self, user_id: int) -> Optional[dict]:
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT data FROM characters WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            if row:
+                from engine import Character
+                return Character.from_dict(json.loads(row["data"]))
+        return None
 
-    def get_character(self, user_id: int):
-        from engine import Character
-        row = self._conn.execute(
-            "SELECT char_data FROM characters WHERE user_id = ?", (user_id,)
-        ).fetchone()
-        if row is None:
-            return None
-        return Character.from_dict(json.loads(row[0]))
+    def save_character(self, user_id: int, char) -> None:
+        with self._conn() as c:
+            c.execute(
+                "INSERT OR REPLACE INTO characters (user_id, data) VALUES (?, ?)",
+                (user_id, json.dumps(char.to_dict())),
+            )
+            c.commit()
 
     def delete_character(self, user_id: int) -> None:
-        self._conn.execute("DELETE FROM characters WHERE user_id = ?", (user_id,))
-        self._conn.commit()
+        with self._conn() as c:
+            c.execute("DELETE FROM characters WHERE user_id = ?", (user_id,))
+            c.commit()
 
-    def list_all_characters(self) -> list:
-        rows = self._conn.execute(
-            "SELECT user_id, char_data, updated_at FROM characters ORDER BY updated_at DESC"
-        ).fetchall()
-        return [(r[0], json.loads(r[1]), r[2]) for r in rows]
-
-    # ─── GameDirector ─────────────────────────────────────
-
-    def save_director(self, chat_id: int, director) -> None:
-        from director import GameDirector
-        self._conn.execute(
-            """INSERT INTO game_state (chat_id, state_data, updated_at)
-               VALUES (?, ?, datetime('now'))
-               ON CONFLICT(chat_id) DO UPDATE SET
-                 state_data = excluded.state_data,
-                 updated_at = datetime('now')""",
-            (chat_id, json.dumps(director.to_dict())),
-        )
-        self._conn.commit()
+    # ─── Режиссёр (сюжет + сеттинг) ───────────────────────
 
     def get_director(self, chat_id: int):
-        """Возвращает GameDirector для чата или новый пустый."""
         from director import GameDirector
-        row = self._conn.execute(
-            "SELECT state_data FROM game_state WHERE chat_id = ?", (chat_id,)
-        ).fetchone()
-        if row is None:
-            return GameDirector()
-        return GameDirector.from_dict(json.loads(row[0]))
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT data FROM directors WHERE chat_id = ?", (chat_id,)
+            ).fetchone()
+            if row:
+                return GameDirector.from_dict(json.loads(row["data"]))
+        return GameDirector()
+
+    def save_director(self, chat_id: int, director) -> None:
+        with self._conn() as c:
+            c.execute(
+                "INSERT OR REPLACE INTO directors (chat_id, data) VALUES (?, ?)",
+                (chat_id, json.dumps(director.to_dict())),
+            )
+            c.commit()
 
     def delete_director(self, chat_id: int) -> None:
-        self._conn.execute("DELETE FROM game_state WHERE chat_id = ?", (chat_id,))
-        self._conn.commit()
-
-    # ─── Произвольное состояние ──────────────────────────
-
-    def save_game_state(self, chat_id: int, state: dict) -> None:
-        self._conn.execute(
-            """INSERT INTO game_state (chat_id, state_data, updated_at)
-               VALUES (?, ?, datetime('now'))
-               ON CONFLICT(chat_id) DO UPDATE SET
-                 state_data = excluded.state_data,
-                 updated_at = datetime('now')""",
-            (chat_id, json.dumps(state)),
-        )
-        self._conn.commit()
-
-    def get_game_state(self, chat_id: int) -> dict | None:
-        row = self._conn.execute(
-            "SELECT state_data FROM game_state WHERE chat_id = ?", (chat_id,)
-        ).fetchone()
-        if row is None:
-            return None
-        return json.loads(row[0])
-
-    def delete_game_state(self, chat_id: int) -> None:
-        self._conn.execute("DELETE FROM game_state WHERE chat_id = ?", (chat_id,))
-        self._conn.commit()
-
-    def close(self) -> None:
-        s
-        elf._conn.close()
+        with self._conn() as c:
+            c.execute("DELETE FROM directors WHERE chat_id = ?", (chat_id,))
+            c.commit()
+            
