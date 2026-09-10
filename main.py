@@ -1,6 +1,6 @@
 """
 D&D Telegram Bot — точка входа
-Стек: aiogram 3.x + SQLite + Groq AI
+Стек: aiogram 3.x + SQLite + Groq AI + Dual-Mode Narrative Director
 """
 
 import asyncio
@@ -22,6 +22,7 @@ from engine import (
 )
 from db import Database
 from ai import GroqAI
+from director import GameDirector
 from formatters import format_check, format_attack, format_character
 
 # ─── Логирование ──────────────────────────────────────────
@@ -41,19 +42,18 @@ ai = GroqAI(api_key=config.GROQ_API_KEY, model=config.GROQ_MODEL)
 # ─── Клавиатуры ────────────────────────────────────────────
 
 def main_menu_kb() -> ReplyKeyboardMarkup:
-    """Главное меню — быстрые действия."""
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🎲 Бросок"), KeyboardButton(text="📋 Лист")],
             [KeyboardButton(text="⚔️ Атака"), KeyboardButton(text="✨ Проверка")],
-            [KeyboardButton(text="💊 Лечить"), KeyboardButton(text="🗣 NPC")],
+            [KeyboardButton(text="💊 Лечить"), KeyboardButton(text="🗺 Сюжет")],
+            [KeyboardButton(text="🗣 NPC"), KeyboardButton(text="🎯 Квест")],
         ],
         resize_keyboard=True,
     )
 
 
 def class_select_kb() -> InlineKeyboardMarkup:
-    """Выбор класса при создании персонажа."""
     builder = InlineKeyboardBuilder()
     for key, label in [
         ("fighter", "⚔️ Воин"),
@@ -67,7 +67,6 @@ def class_select_kb() -> InlineKeyboardMarkup:
 
 
 def stat_select_kb(dc: int = 10) -> InlineKeyboardMarkup:
-    """Выбор характеристики для проверки."""
     builder = InlineKeyboardBuilder()
     for s in STATS:
         builder.button(text=STAT_NAMES[s], callback_data=f"stat:check:{s}:{dc}")
@@ -77,12 +76,19 @@ def stat_select_kb(dc: int = 10) -> InlineKeyboardMarkup:
 
 # ─── Хелперы ──────────────────────────────────────────────
 
-async def get_or_warn(message: Message) -> Character | None:
-    """Получить персонажа пользователя или предупредить."""
+async def get_char(message: Message) -> Character | None:
     char = db.get_character(message.from_user.id)
     if char is None:
         await message.answer("У вас нет персонажа. Создайте: /create")
     return char
+
+
+def get_director(chat_id: int) -> GameDirector:
+    return db.get_director(chat_id)
+
+
+def save_director(chat_id: int, director: GameDirector) -> None:
+    db.save_director(chat_id, director)
 
 
 # ─── Команды ──────────────────────────────────────────────
@@ -90,7 +96,7 @@ async def get_or_warn(message: Message) -> Character | None:
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     await message.answer(
-        "🎲 **D&D Bot** — упрощённая D&D в Telegram\n\n"
+        "🎲 **D&D Bot** — упрощённая D&D с режиссёрским движком\n\n"
         "Команды:\n"
         "/create — создать персонажа\n"
         "/roll `d20` — бросить кубики\n"
@@ -98,9 +104,11 @@ async def cmd_start(message: Message):
         "/attack — атака по цели\n"
         "/heal — вылечить\n"
         "/sheet — лист персонажа\n"
+        "/quest — добавить сюжетную цель\n"
+        "/plot — статус сюжета (milestone, tension, режим)\n"
         "/npc — поговорить с NPC\n"
-        "/delete — удалить персонажа\n\n"
-        "Сначала создайте героя: /create",
+        "/act — свободное действие (режиссёр опишет результат)\n"
+        "/newgame — сбросить сюжет\n",
         reply_markup=main_menu_kb(),
         parse_mode="Markdown",
     )
@@ -139,15 +147,14 @@ async def cmd_delete(message: Message):
 
 @dp.message(Command("sheet"))
 async def cmd_sheet(message: Message):
-    char = await get_or_warn(message)
+    char = await get_char(message)
     if char:
         await message.answer(format_character(char), parse_mode="HTML")
 
 
 @dp.message(Command("roll"))
 async def cmd_roll(message: Message):
-    """Бросок кубиков. Формат: /roll 2d6+3"""
-    char = await get_or_warn(message)
+    char = await get_char(message)
     if not char:
         return
     args = message.text.split(maxsplit=1)
@@ -169,8 +176,7 @@ async def cmd_roll(message: Message):
 
 @dp.message(Command("check"))
 async def cmd_check(message: Message):
-    """Проверка характеристики. Формат: /check str 15"""
-    char = await get_or_warn(message)
+    char = await get_char(message)
     if not char:
         return
     args = message.text.split()
@@ -194,20 +200,29 @@ async def cmd_check(message: Message):
     result = action_check(char, stat, dc)
     text = format_check(result)
 
+    # Режиссёр: обновляем состояние
+    director = get_director(message.chat.id)
+    dir_state = director.update_state(f"проверка {stat}", result)
+    save_director(message.chat.id, director)
+
     if ai.available:
         try:
-            narrative = await ai.narrate_check(result)
-            text += f"\n\n_{narrative}_"
+            narrative = await ai.narrate_check(result, director)
+            if narrative:
+                text += f"\n\n_{narrative}_"
         except Exception:
             pass
+
+    # Показываем режим, если Plot
+    if dir_state["mode"] == "plot":
+        text += f"\n\n🎭 Режим: PLOT (напряжение: {dir_state['tension']}/100)"
 
     await message.answer(text, parse_mode="Markdown")
 
 
 @dp.message(Command("attack"))
 async def cmd_attack(message: Message):
-    """Атака по NPC. Формат: /attack Гоблин 12 15"""
-    char = await get_or_warn(message)
+    char = await get_char(message)
     if not char:
         return
     args = message.text.split()
@@ -232,10 +247,16 @@ async def cmd_attack(message: Message):
     result = attack(char, target)
     text = format_attack(result)
 
+    # Режиссёр
+    director = get_director(message.chat.id)
+    dir_state = director.update_state(f"атакую {target_name}")
+    save_director(message.chat.id, director)
+
     if ai.available:
         try:
-            narrative = await ai.narrate_attack(result)
-            text += f"\n\n_{narrative}_"
+            narrative = await ai.narrate_attack(result, director)
+            if narrative:
+                text += f"\n\n_{narrative}_"
         except Exception:
             pass
 
@@ -245,8 +266,7 @@ async def cmd_attack(message: Message):
 
 @dp.message(Command("heal"))
 async def cmd_heal(message: Message):
-    """Лечение. Формат: /heal 10 (без аргумента — 1d4)"""
-    char = await get_or_warn(message)
+    char = await get_char(message)
     if not char:
         return
     args = message.text.split()
@@ -264,6 +284,104 @@ async def cmd_heal(message: Message):
         f"💊 {char.name} восстанавливает {amount} HP. "
         f"Текущее HP: {new_hp}/{char.max_hp}"
     )
+
+
+# ─── Новые команды: режиссёр ─────────────────────────────
+
+@dp.message(Command("quest"))
+async def cmd_quest(message: Message):
+    """Добавить milestone. Формат: /quest Название | Описание | действие1,действие2"""
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer(
+            "Формат: /quest <Название> | <Описание> | <ключевые действия>\n"
+            "Пример: /quest Найти артефакт | Отыскать Меч Древних | искать артефакт,найти меч"
+        )
+        return
+    parts = args[1].split("|")
+    if len(parts) < 2:
+        await message.answer("Нужно: Название | Описание | действия")
+        return
+    name = parts[0].strip()
+    description = parts[1].strip()
+    target_actions = []
+    if len(parts) > 2:
+        target_actions = [a.strip() for a in parts[2].split(",")]
+
+    director = get_director(message.chat.id)
+    director.add_milestone(name, description, target_actions)
+    save_director(message.chat.id, director)
+
+    await message.answer(
+        f"🎯 Сюжетная цель добавлена:\n"
+        f"   {name}\n"
+        f"   {description}\n"
+        f"   Ключевые действия: {', '.join(target_actions) if target_actions else 'нет'}"
+    )
+
+
+@dp.message(Command("plot"))
+async def cmd_plot(message: Message):
+    """Показать статус сюжета."""
+    director = get_director(message.chat.id)
+    ctx = director.get_context()
+
+    text = (
+        f"🎭 **Статус сюжета**\n\n"
+        f"Режим: **{ctx['mode'].upper()}**\n"
+        f"Текущая цель: {ctx['current_milestone']}\n"
+        f"Прогресс: {ctx['milestone_progress']}%\n"
+        f"Описание: {ctx['milestone_description']}\n"
+        f"Напряжение: {ctx['tension']}/100\n"
+        f"Близость к цели: {ctx['proximity']}%\n"
+    )
+    if director.milestones:
+        text += "\n_all Milestones:_\n"
+        for i, ms in enumerate(director.milestones):
+            tag = " ✅" if ms["completed"] else (" ←" if i == director.current_milestone_idx else "")
+            text += f"  {i+1}. {ms['name']} ({ms['progress']}%){tag}\n"
+
+    await message.answer(text, parse_mode="Markdown")
+
+
+@dp.message(Command("act"))
+async def cmd_act(message: Message):
+    """Свободное действие игрока — режиссёр опишет результат."""
+    char = await get_char(message)
+    if not char:
+        return
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer("Опишите действие: /act иду осмотреть руины")
+        return
+    action = args[1]
+
+    director = get_director(message.chat.id)
+    dir_state = director.update_state(action)
+    save_director(message.chat.id, director)
+
+    text = ""
+    if ai.available:
+        try:
+            narrative = await ai.narrate_action(action, director)
+            if narrative:
+                text = narrative
+        except Exception as e:
+            text = f"(ошибка: {e})"
+    else:
+        text = f"🎲 Действие: {action}\nРежим: {dir_state['mode'].upper()}"
+
+    if dir_state["mode"] == "plot":
+        text += f"\n\n🎭 PLOT (напряжение: {dir_state['tension']}/100)"
+
+    await message.answer(text)
+
+
+@dp.message(Command("newgame"))
+async def cmd_newgame(message: Message):
+    """Сбросить сюжетное состояние."""
+    db.delete_director(message.chat.id)
+    await message.answer("🎭 Сюжет сброшен. Добавьте новую цель: /quest")
 
 
 @dp.message(Command("npc"))
@@ -285,15 +403,17 @@ async def cmd_npc(message: Message):
         npc_role = "NPC"
         user_msg = msg_parts[0]
 
+    director = get_director(message.chat.id)
+
     if ai.available:
         try:
-            reply = await ai.npc_dialogue(npc_name, npc_role, user_msg)
+            reply = await ai.npc_dialogue(npc_name, npc_role, user_msg, director)
             await message.answer(f"🗣 {npc_name}:\n{reply}")
         except Exception as e:
             await message.answer(f"NPC молчит... (ошибка: {e})")
     else:
         await message.answer(
-            "💬 AI недоступен. Укажите GROQ_API_KEY в .env для диалогов."
+            "💬 AI недоступен. Укажите GROQ_API_KEY в переменных окружения."
         )
 
 
@@ -301,7 +421,7 @@ async def cmd_npc(message: Message):
 
 @dp.message(F.text == "🎲 Бросок")
 async def quick_roll(message: Message):
-    char = await get_or_warn(message)
+    char = await get_char(message)
     if not char:
         return
     result = Dice.d20(mod=0)
@@ -313,28 +433,40 @@ async def quick_roll(message: Message):
 
 @dp.message(F.text == "📋 Лист")
 async def quick_sheet(message: Message):
-    char = await get_or_warn(message)
+    char = await get_char(message)
     if char:
         await message.answer(format_character(char), parse_mode="HTML")
 
 
 @dp.message(F.text == "⚔️ Атака")
 async def quick_attack(message: Message):
-    char = await get_or_warn(message)
+    char = await get_char(message)
     if not char:
         return
-    # Демо-атака по гоблину
     goblin = Character(name="Гоблин", ac=12, max_hp=7, current_hp=7,
                        dex=14, weapon="1d6", weapon_mod="dex")
     result = attack(char, goblin)
     text = format_attack(result)
+
+    director = get_director(message.chat.id)
+    director.update_state("атакую гоблина")
+    save_director(message.chat.id, director)
+
+    if ai.available:
+        try:
+            narrative = await ai.narrate_attack(result, director)
+            if narrative:
+                text += f"\n\n_{narrative}_"
+        except Exception:
+            pass
+
     db.save_character(message.from_user.id, char)
     await message.answer(text, parse_mode="Markdown")
 
 
 @dp.message(F.text == "✨ Проверка")
 async def quick_check(message: Message):
-    char = await get_or_warn(message)
+    char = await get_char(message)
     if not char:
         return
     await message.answer(
@@ -345,7 +477,6 @@ async def quick_check(message: Message):
 
 @dp.callback_query(F.data.startswith("stat:"))
 async def cb_stat_check(callback: CallbackQuery):
-    """Обработка выбора характеристики для быстрой проверки."""
     parts = callback.data.split(":")
     stat = parts[2]
     dc = int(parts[3]) if len(parts) > 3 else 10
@@ -355,19 +486,29 @@ async def cb_stat_check(callback: CallbackQuery):
         return
     result = action_check(char, stat, dc)
     text = format_check(result)
+
+    director = get_director(callback.message.chat.id)
+    dir_state = director.update_state(f"проверка {stat}", result)
+    save_director(callback.message.chat.id, director)
+
     if ai.available:
         try:
-            narrative = await ai.narrate_check(result)
-            text += f"\n\n_{narrative}_"
+            narrative = await ai.narrate_check(result, director)
+            if narrative:
+                text += f"\n\n_{narrative}_"
         except Exception:
             pass
+
+    if dir_state["mode"] == "plot":
+        text += f"\n\n🎭 PLOT (напряжение: {dir_state['tension']}/100)"
+
     await callback.message.edit_text(text, parse_mode="Markdown")
     await callback.answer()
 
 
 @dp.message(F.text == "💊 Лечить")
 async def quick_heal(message: Message):
-    char = await get_or_warn(message)
+    char = await get_char(message)
     if not char:
         return
     amount = Dice.roll("1d4")["total"]
@@ -376,6 +517,31 @@ async def quick_heal(message: Message):
     await message.answer(
         f"💊 {char.name} выпивает зелье. Восстановлено {amount} HP. "
         f"Текущее HP: {new_hp}/{char.max_hp}"
+    )
+
+
+@dp.message(F.text == "🗺 Сюжет")
+async def quick_plot(message: Message):
+    """Кнопка быстрого просмотра статуса сюжета."""
+    director = get_director(message.chat.id)
+    ctx = director.get_context()
+
+    text = (
+        f"🎭 **Статус сюжета**\n\n"
+        f"Режим: **{ctx['mode'].upper()}**\n"
+        f"Текущая цель: {ctx['current_milestone']}\n"
+        f"Прогресс: {ctx['milestone_progress']}%\n"
+        f"Напряжение: {ctx['tension']}/100\n"
+        f"Близость: {ctx['proximity']}%\n"
+    )
+    await message.answer(text, parse_mode="Markdown")
+
+
+@dp.message(F.text == "🎯 Квест")
+async def quick_quest(message: Message):
+    await message.answer(
+        "Формат: /quest <Название> | <Описание> | <ключевые действия>\n"
+        "Пример: /quest Найти артефакт | Меч Древних | искать артефакт,найти меч"
     )
 
 
@@ -397,4 +563,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-      
+    
