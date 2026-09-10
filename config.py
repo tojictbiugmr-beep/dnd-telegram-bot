@@ -19,8 +19,7 @@ class Config:
     BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 
     # GROQ_API_KEY добавляется вручную в панели Bothost
-    GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
-    GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    GRGROQ_MODEL: str = os.getenv("GROQ_MODEL", "compound-mini")
 
     # SQLite: на Bothost контейнер пересоздаётся при деплое,
     # поэтому БД лучше класть в /tmp (сохраняется между рестартами,
