@@ -103,7 +103,104 @@ def save_director(chat_id: int, director: GameDirector) -> None:
 
 
 # ─── Команды ──────────────────────────────────────────────
+@dp.message(Command("setting"))
+async def cmd_setting(message: Message):
+    """Выбор сеттинга мира."""
+    director = get_director(message.chat.id)
+    current = director.get_setting_info()
 
+    text = "🌍 **Выбор сеттинга мира**\n\n"
+    if director.has_setting():
+        text += f"Текущий: **{current['name']}**\n"
+        text += f"_{current['description']}_\n\n"
+        text += "Выберите новый или задайте свой:"
+    else:
+        text += "Сеттинг не задан. Выберите пресет или задайте свой:"
+
+    await message.answer(text, parse_mode="Markdown",
+                         reply_markup=setting_select_kb())
+
+
+@dp.callback_query(F.data.startswith("setting:"))
+async def cb_setting(callback: CallbackQuery):
+    """Обработка выбора сеттинга."""
+    key = callback.data.split(":")[1]
+    director = get_director(callback.message.chat.id)
+
+    if key == "custom":
+        await callback.message.edit_text(
+            "✏️ Напишите свой сеттинг командой:\n"
+            "`/setcustom Название и описание вашего мира`\n\n"
+            "Пример: `/setcustom Мир ледяных пустошей, где солнце не взошло 100 лет`"
+        )
+        await callback.answer()
+        return
+
+    success = director.set_setting(key=key)
+    if success:
+        save_director(callback.message.chat.id, director)
+        info = director.get_setting_info()
+        await callback.message.edit_text(
+            f"🌍 **Сеттинг установлен: {info['name']}**\n\n"
+            f"_{info['description']}_\n\n"
+            f"Тон: {info['tone']}\n"
+            f"Темы: {info['themes']}\n\n"
+            f"Теперь добавьте сюжетную цель: /quest",
+            parse_mode="Markdown",
+        )
+        await callback.answer("Готово!")
+    else:
+        await callback.answer("Ошибка: неизвестный сеттинг")
+
+
+@dp.message(Command("setcustom"))
+async def cmd_setcustom(message: Message):
+    """Задать кастомный сеттинг. Формат: /setcustom описание мира"""
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer(
+            "Формат: /setcustom <описание мира>\n"
+            "Пример: /setcustom Мир ледяных пустошей, солнце не взошло 100 лет"
+        )
+        return
+
+    director = get_director(message.chat.id)
+    director.set_setting(custom=args[1])
+    save_director(message.chat.id, director)
+
+    await message.answer(
+        f"🌍 **Сеттинг установлен: Свой сеттинг**\n\n"
+        f"_{args[1]}_\n\n"
+        f"Теперь добавьте сюжетную цель: /quest",
+        parse_mode="Markdown",
+    )
+
+
+@dp.message(F.text == "🌍 Сеттинг")
+async def quick_setting(message: Message):
+    """Кнопка быстрого выбора сеттинга."""
+    director = get_director(message.chat.id)
+    current = director.get_setting_info()
+
+    text = "🌍 **Сеттинг мира**\n\n"
+    if director.has_setting():
+        text += f"Текущий: **{current['name']}**\n"
+        text += f"_{current['description']}_\n\n"
+        text += "Изменить:"
+    else:
+        text += "Не задан. Выберите:"
+
+    await message.answer(text, parse_mode="Markdown",
+                         reply_markup=setting_select_kb())
+
+
+@dp.message(F.text == "🎬 Действие")
+async def quick_act(message: Message):
+    """Кнопка-подсказка для свободного действия."""
+    await message.answer(
+        "Опишите действие: /act <что делаете>\n"
+        "Пример: /act осматриваю руины замка"
+        )
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     await message.answer(
@@ -575,3 +672,4 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
     
+
