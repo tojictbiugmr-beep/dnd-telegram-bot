@@ -175,7 +175,27 @@ async def cmd_setcustom(message: Message):
         parse_mode="Markdown",
     )
 
-
+@dp.message(CommandStart())
+async def cmd_start(message: Message):
+    await message.answer(
+        "🎲 **D&D Bot** — упрощённая D&D с режиссёрским движком\n\n"
+        "Команды:\n"
+        "/create — создать персонажа\n"
+        "/setting — выбрать сеттинг мира\n"
+        "/quest — добавить сюжетную цель\n"
+        "/plot — статус сюжета (milestone, tension, режим)\n"
+        "/act — свободное действие (режиссёр опишет результат)\n"
+        "/roll `d20` — бросить кубики\n"
+        "/check — проверка характеристики\n"
+        "/attack — атака по цели\n"
+        "/heal — вылечить\n"
+        "/sheet — лист персонажа\n"
+        "/npc — поговорить с NPC\n"
+        "/newgame — сбросить сюжет\n",
+        reply_markup=main_menu_kb(),
+        parse_mode="Markdown",
+    )
+        
 @dp.message(F.text == "🌍 Сеттинг")
 async def quick_setting(message: Message):
     """Кнопка быстрого выбора сеттинга."""
