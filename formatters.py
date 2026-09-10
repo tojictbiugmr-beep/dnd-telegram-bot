@@ -1,56 +1,57 @@
 """
-Форматирование сообщений для Telegram.
+Форматирование текста для вывода в Telegram.
 """
 
-from engine import STATS, STAT_NAMES
+from engine import STAT_NAMES
 
 
 def format_character(char) -> str:
-    lines = [
-        f"<b>{char.name}</b> ({char.class_key}, {char.level} ур.)",
-        f"❤️ HP: {char.current_hp}/{char.max_hp}",
-        f"🛡 AC: {char.ac}",
-    ]
-    stat_parts = []
-    for s in STATS:
-        val = char.stats.get(s, 10)
-        mod = (val - 10) // 2
-        mod_str = f"+{mod}" if mod >= 0 else str(mod)
-        stat_parts.append(f"{STAT_NAMES[s]} {val} ({mod_str})")
-    lines.append("📊 " + ", ".join(stat_parts))
-    lines.append(f"🗡 Оружие: {char.weapon}")
-    return "\n".join(lines)
+    stats_str = ", ".join(
+        f"{STAT_NAMES[s]} {char.stats.get(s, 10)}"
+        f" ({'+' if char.get_mod(s) >= 0 else ''}{char.get_mod(s)})"
+        for s in ["str", "dex", "con", "int", "wis", "cha"]
+    )
+    return (
+        f"<b>{char.name}</b> ({char.class_key}, {char.level} ур.)\n"
+        f"❤️ HP: {char.current_hp}/{char.max_hp}\n"
+        f"🛡 AC: {char.ac}\n"
+        f"📊 {stats_str}\n"
+        f"🗡 Оружие: {char.weapon}"
+    )
 
 
 def format_check(result: dict) -> str:
+    r = result["roll"]
     status = "✅ Успех" if result["success"] else "❌ Провал"
-    crit_str = ""
-    if result["crit"] == "success":
-        crit_str = " 🎯 КРИТ!"
-    elif result["crit"] == "fail":
-        crit_str = " 💥 Критпровал!"
-
-    mod = result["mod"]
-    mod_str = f"+{mod}" if mod >= 0 else str(mod)
-
+    if result["crit"]:
+        status = "🌟 КРИТ! " + status
+    elif result["fumble"]:
+        status = "💀 КРИТИЧЕСКИЙ ПРОВАЛ! " + status
+    mod_str = f" {'+' + str(r['mod']) if r['mod'] >= 0 else str(r['mod'])}" if r["mod"] else ""
     return (
-        f"🎲 {result['stat_name']} | d20: {result['roll']} ({mod_str}) = {result['total']}\n"
-        f"   DC {result['dc']} → {status}{crit_str}"
+        f"🎲 Проверка: {result['stat_name']} (DC {result['dc']})\n"
+        f"Бросок: d20{mod_str} = {r['natural']}{mod_str} = {r['total']}\n"
+        f"Результат: {status}"
     )
 
 
 def format_attack(result: dict) -> str:
+    r = result["roll"]
     attacker = result["attacker"]
     target = result["target"]
-    line = f"⚔️ {attacker} → {target}\n"
 
-    if not result["hit"] and result["crit"] != "hit":
-        return line + "   Промах!"
+    if result["fumble"]:
+        return f"⚔️ {attacker.name} атакует {target.name}...\n💀 КРИТИЧЕСКИЙ ПРОВАЛ! Атака провалилась."
 
-    tag = " 🎯 КРИТ!" if result["crit"] == "hit" else ""
-    line += f"   Попадание{tag} Урон: {result['damage']}"
-    line += f" → HP: {result['def_hp_after']}"
-    if result["def_hp_after"] == 0:
-        line += " 💀"
-    
-    return line
+    if not result["hit"]:
+        mod_str = f" {'+' + str(r['mod']) if r['mod'] >= 0 else str(r['mod'])}" if r["mod"] else ""
+        return f"⚔️ {attacker.name} атакует {target.name}.\n🎲 d20{mod_str} = {r['total']} — Промах! (AC {target.ac})"
+
+    crit_str = "🌟 КРИТ! " if result["crit"] else ""
+    return (
+        f"⚔️ {attacker.name} атакует {target.name}.\n"
+        f"🎲 d20 = {r['natural']} → {r['total']} — Попадание! (AC {target.ac})\n"
+        f"{crit_str}Урон: {result['damage']}\n"
+        f"❤️ {target.name} HP: {result['target_hp']}/{target.max_hp}"
+        + (" — ПОВЕРЖЕН!" if result["target_dead"] else "")
+    )
