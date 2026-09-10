@@ -9,8 +9,9 @@ log = logging.getLogger("dnd-bot.ai")
 
 
 class GroqAI:
-    def __init__(self, api_key: str = "", model: str = "llama-3.3-70b-versatile"):
-        self.api_key = api_key
+     def __init__(self, api_key: str = "", model: str = "compound-mini"):
+         
+    self.api_key = api_key
         self.model = model
         self.available = bool(api_key)
         self._client = None
