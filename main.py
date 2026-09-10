@@ -40,7 +40,16 @@ ai = GroqAI(api_key=config.GROQ_API_KEY, model=config.GROQ_MODEL)
 
 
 # ─── Клавиатуры ────────────────────────────────────────────
-
+def setting_select_kb() -> InlineKeyboardMarkup:
+    """Inline-кнопки выбора сеттинга."""
+    builder = InlineKeyboardBuilder()
+    presets = GameDirector.PRESET_SETTINGS
+    for key, val in presets.items():
+        builder.button(text=val["name"], callback_data=f"setting:{key}")
+    builder.button(text="✏️ Свой", callback_data="setting:custom")
+    builder.adjust(2)
+    return builder.as_markup()
+    
 def main_menu_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
