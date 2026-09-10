@@ -87,4 +87,4 @@ class Database:
             rows = conn.execute(
                 "SELECT user_id, char_data, updated_at FROM characters ORDER BY updated_at DESC"
             ).fetchall()
-        return [(r[0], json.loads(r[1]), r[2]) for in rows]
+        return [(r[0], json.loads(r[1]), r[2]) for r in rows]
