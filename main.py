@@ -616,4 +616,58 @@ async def quick_npc(message: Message):
     )
 
 
-# ─── Свободный ввод — игровое действие ───────
+# ─── Свободный ввод — игровое действие ───────────────────
+
+@dp.message(F.text)
+async def free_text_action(message: Message, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state is not None:
+        return
+
+    if message.text in BUTTON_TEXTS:
+        return
+
+    char = await get_char(message)
+    if not char:
+        return
+
+    director = get_director(message.chat.id)
+
+    if not director.has_setting():
+        await message.answer("Сначала задайте сеттинг: /setting")
+        return
+
+    action = message.text
+    dir_state = director.update_state(action)
+    save_director(message.chat.id, director)
+
+    if ai.available:
+        try:
+            narrative = await ai.generate_scene(action, director)
+            text = narrative or "(пусто)"
+        except Exception as e:
+            text = f"(ошибка: {e})"
+    else:
+        text = (
+            f"🎲 {action}\n"
+            f"Режим: {dir_state['mode'].upper()}\n"
+            f"Напряжение: {dir_state['tension']}/100\n"
+            f"(AI недоступен — настройте GROQ_API_KEY)"
+        )
+
+    if dir_state["mode"] == "plot":
+        text += f"\n\n🎭 PLOT (напряжение: {dir_state['tension']}/100)"
+
+    await message.answer(text)
+
+
+# ─── Запуск ───────────────────────────────────────────────
+
+async def main():
+    log.info("Бот запускается...")
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
