@@ -47,10 +47,12 @@ def main_menu_kb() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="🎲 Бросок"), KeyboardButton(text="📋 Лист")],
             [KeyboardButton(text="⚔️ Атака"), KeyboardButton(text="✨ Проверка")],
             [KeyboardButton(text="💊 Лечить"), KeyboardButton(text="🗺 Сюжет")],
-            [KeyboardButton(text="🗣 NPC"), KeyboardButton(text="🎯 Квест")],
+            [KeyboardButton(text="🌍 Сеттинг"), KeyboardButton(text="🎯 Квест")],
+            [KeyboardButton(text="🗣 NPC"), KeyboardButton(text="🎬 Действие")],
         ],
         resize_keyboard=True,
     )
+
 
 
 def class_select_kb() -> InlineKeyboardMarkup:
