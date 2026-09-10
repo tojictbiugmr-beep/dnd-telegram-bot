@@ -1,0 +1,16 @@
+# .env — никогда не коммитить!
+.env
+
+# База данных
+*.db
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# IDE
+.vscode/
+.ide
+a/
