@@ -664,6 +664,11 @@ async def quick_plot(message: Message):
     )
     await message.answer(text, parse_mode="Markdown")
 
+# В конец функции cmd_plot, перед await message.answer:
+    if director.has_setting():
+        s = director.get_setting_info()
+        text += f"\n🌍 Сеттинг: {s['name']}\n"
+
 
 @dp.message(F.text == "🎯 Квест")
 async def quick_quest(message: Message):
