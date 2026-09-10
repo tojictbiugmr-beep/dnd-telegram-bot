@@ -6,6 +6,9 @@ D&D Telegram Bot — точка входа
 import asyncio
 import logging
 
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
@@ -24,6 +27,10 @@ from db import Database
 from ai import GroqAI
 from director import GameDirector
 from formatters import format_check, format_attack, format_character
+class GameStates(StatesGroup):
+    waiting_setting = State()
+    waiting_quest = State()
+    
 
 # ─── Логирование ──────────────────────────────────────────
 logging.basicConfig(
@@ -290,31 +297,136 @@ async def cmd_heal(message: Message):
 
 
 # ─── Сеттинг ─────────────────────────────────────────────
-
 @dp.message(Command("setting"))
-async def cmd_setting(message: Message):
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        director = get_director(message.chat.id)
-        if director.has_setting():
-            info = director.get_setting_info()
-            text = (
-                f"🌍 **Текущий сеттинг:**\n\n"
-                f"_{info['description']}_\n\n"
-            )
-            if info["framework"]:
-                text += f"**Каркас истории:**\n{info['framework']}\n\n"
-            text += "Изменить: /setting <новое описание мира>"
-        else:
-            text = (
-                "🌍 **Сеттинг не задан.**\n\n"
-                "Опишите мир одной строкой:\n"
-                "`/setting Мрачный мир, где солнце не взошло 100 лет`\n\n"
-                "После этого бот сгенерирует каркас истории."
-            )
-        await message.answer(text, parse_mode="Markdown")
-        return
+async def cmd_setting(message: Message, state: FSMContext):
+    await state.clear()
+    director = get_director(message.chat.id)
+    if director.has_setting():
+        info = director.get_setting_info()
+        text = (
+            f"🌍 **Текущий сеттинг:**\n\n"
+            f"_{info['description']}_\n\n"
+        )
+        if info["framework"]:
+            text += f"**Каркас истории:**\n{info['framework']}\n\n"
+        if director.milestones:
+            text += "**Сюжетные цели:**\n"
+            for i, ms in enumerate(director.milestones):
+                tag = " ✅" if ms["completed"] else (" ←" if i == director.current_milestone_idx else "")
+                text += f"  {i+1}. {ms['name']} ({ms['progress']}%){tag}\n"
+        text += "\nХотите изменить? Опишите новый мир:"
+    else:
+        text = (
+            "🌍 **Опишите ваш мир.**\n\n"
+            "Например: «Мрачный мир, где солнце не взошло 100 лет, "
+            "а древние культы пробуждаются в подземельях».\n\n"
+            "Бот создаст сюжетные цели автоматически."
+        )
+    await state.set_state(GameStates.waiting_setting)
+    await message.answer(text, parse_mode="Markdown")
 
+        if info["framework"]:
+            text += f"**Каркас истории:**\n{info['framework']}\n\n"
+        if director.milestones:
+            text += "**Сюжетные цели:**\n"
+            for i, ms in enumerate(director.milestones):
+                tag = " ✅" if ms["completed"] else (" ←" if i == director.current_milestone_idx else "")
+                text += f"  {i+1}. {ms['name']} ({ms['progress']}%){tag}\n"
+        text += "\nХотите изменить? Опишите новый мир:"
+    else:
+        text = (
+            "🌍 **Опишите ваш мир.**\n\n"
+            "Например: «Мрачный мир, где солнце не взошло 100 лет, "
+            "а древние культы пробуждаются в подземельях».\n\n"
+            "Бот создаст сюжетные цели автоматически."
+        )
+    await state.set_state(GameStates.waiting_setting)
+    await message.answer(text, parse_mode="Markdown")
+@dp.message(GameStates.waiting_setting)
+async def process_setting(message: Message, state: FSMContext):
+    """Получили описание мира — генерируем каркас и milestones."""
+    await state.clear()
+
+    description = message.text
+    director = get_director(message.chat.id)
+
+    # Сбрасываем старые milestones
+    director.milestones = []
+    director.current_milestone_idx = 0
+    director.tension = 0
+    director.milestone_proximity = 0
+    director.player_history = []
+
+    director.set_setting(description)
+    save_director(message.chat.id, director)
+
+    if ai.available:
+        await message.answer("⏳ Генерирую мир и сюжетные цели...")
+        try:
+            framework = await ai.generate_framework(description)
+            if framework:
+                director.set_framework(framework)
+
+                parsed = 0
+                for line in framework.strip().split("\n"):
+                    line = line.strip()
+                    if not line or "|" not in line:
+                        continue
+                    parts = [p.strip() for p in line.split("|")]
+                    if len(parts) < 2:
+                        continue
+                    name = parts[0]
+                    ms_desc = parts[1]
+                    actions = []
+                    if len(parts) > 2 and parts[2]:
+                        actions = [a.strip() for a in parts[2].split(",") if a.strip()]
+                    director.add_milestone(name, ms_desc, actions)
+                    parsed += 1
+
+                save_director(message.chat.id, director)
+
+                if parsed > 0:
+                    text = (
+                        f"🌍 **Мир создан!**\n\n"
+                        f"_{description}_\n\n"
+                        f"**Сюжетные цели ({parsed}):**\n"
+                    )
+                    for i, ms in enumerate(director.milestones):
+                        text += f"  {i+1}. {ms['name']} — {ms['description']}\n"
+                    text += (
+                        f"\nТеперь создайте персонажа: /create\n"
+                        f"И просто пишите текстом, что делаете."
+                    )
+                    await message.answer(text, parse_mode="Markdown")
+                    return
+                else:
+                    save_director(message.chat.id, director)
+                    await message.answer(
+                        f"🌍 **Мир создан:**\n\n_{description}_\n\n"
+                        f"**Каркас:**\n{framework}\n\n"
+                        f"(цели не распарсились — добавьте вручную: /quest)",
+                        parse_mode="Markdown",
+                    )
+                    return
+        except Exception as e:
+            log.error(f"Framework generation error: {e}")
+
+    await message.answer(
+        f"🌍 **Мир создан:**\n\n_{description}_\n\n"
+        f"AI недоступен — добавьте цели вручную: /quest",
+        parse_mode="Markdown",
+    )
+
+                    return
+        except Exception as e:
+            log.error(f"Framework generation error: {e}")
+
+    await message.answer(
+        f"🌍 **Мир создан:**\n\n_{description}_\n\n"
+        f"AI недоступен — добавьте цели вручную: /quest",
+        parse_mode="Markdown",
+    )
+    
     description = args[1]
     director = get_director(message.chat.id)
     director.set_setting(description)
@@ -581,19 +693,19 @@ async def quick_npc(message: Message):
 # ─── Свободный ввод — игровое действие ───────────────────
 
 @dp.message(F.text)
-async def free_text_action(message: Message):
-    """
-    Любой текст без команды — игровое действие.
-    Режиссёр анализирует, Groq описывает результат.
-    Стоит последним — перехватывает всё, что не команда и не кнопка.
-    """
-    # Пропускаем тексты кнопок
+async def free_text_action(message: Message, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state is not None:
+        return  # Игрок в состоянии FSM — не обрабатываем как действие
+
     if message.text in BUTTON_TEXTS:
         return
 
     char = await get_char(message)
     if not char:
         return
+    # ... дальше без изменений
+
 
     action = message.text
     director = get_director(message.chat.id)
@@ -635,3 +747,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
