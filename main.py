@@ -17,7 +17,9 @@ from aiogram.types import (
     InlineKeyboardMarkup,
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from actions import match_action
+from ai import SYSTEM_PROMPT as SYSTEM_PROMPT_IMPORT
+from actions import match_action, is_no_check, calc_dc, get_consequences, build_ai_prompt
+
 
 from config import config
 from engine import Character, Dice, action_check, attack, STATS, STAT_NAMES
@@ -661,7 +663,9 @@ async def free_text_action(message: Message, state: FSMContext):
 
     await message.answer(text)
 
-from actions import match_action  # <-- импорт из нового файла
+
+from actions import match_action, is_no_check, calc_dc, get_consequences, build_ai_prompt
+
 
 @dp.message(F.text)
 async def free_action(message: Message):
@@ -671,25 +675,83 @@ async def free_action(message: Message):
 
     director = get_director(message.chat.id)
     user_text = message.text.strip()
+    lower_text = user_text.lower()
 
-    # Пытаемся найти подходящую проверку
-    check = match_action(user_text)
-
-    if check:
-        stat, dc, skill_name = check
-        result = action_check(char, stat, dc)
-        text = format_check(result)
-
-        dir_state = director.update_state(f"{skill_name}: {'успех' if result['success'] else 'провал'}", result)
+    # ── 1. Фразы без проверки ──────────────────────
+    if is_no_check(lower_text):
+        dir_state = director.update_state(f"игрок: {user_text[:60]}")
         save_director(message.chat.id, director)
 
         if ai.available:
             try:
-                narrative = await ai.narrate_check(result, director)
+                narrative = await ai.generate_scene(user_text, director)
+                if narrative:
+                    response = f"_{narrative}_"
+                    if dir_state.get("mode") == "plot":
+                        response += f"\n\n🎭 PLOT (напряжение: {dir_state['tension']}/100)"
+                    await message.answer(response, parse_mode="Markdown")
+                    return
+            except Exception as e:
+                log.error(f"generate_scene error: {e}")
+
+        text = f"📝 {user_text}"
+        if dir_state.get("mode") == "plot":
+            text += f"\n\n🎭 PLOT (напряжение: {dir_state['tension']}/100)"
+        await message.answer(text)
+        return
+
+    # ── 2. Поиск проверки ──────────────────────────
+    check = match_action(user_text)
+
+    if check:
+        stat, base_dc, skill_name, fail_event = check
+
+        # Гибкий DC: напряжение + повторные попытки
+        attempts = getattr(director, "attempts", {}).get(skill_name, 0)
+        dc = calc_dc(base_dc, director.tension, attempts)
+
+        # Бросок
+        result = action_check(char, stat, dc)
+        result["fail_event"] = fail_event
+        result["stat_name"] = skill_name
+
+        # Последствия
+        consequences = get_consequences(result)
+
+        # Обновляем напряжение
+        director.tension = max(0, min(100, director.tension + consequences["tension_delta"]))
+
+        # Запоминаем попытку (для усталости)
+        if not hasattr(director, "attempts"):
+            director.attempts = {}
+        director.attempts[skill_name] = attempts + 1
+        if result["success"]:
+            director.attempts[skill_name] = 0  # успех сбрасывает счётчик
+
+        dir_state = director.update_state(
+            f"{skill_name}: {'успех' if result['success'] else 'провал'}",
+            result,
+        )
+        save_director(message.chat.id, director)
+
+        # Форматируем результат броска
+        text = format_check(result)
+
+        # Добавляем нарратив от AI
+        if ai.available:
+            try:
+                prompt = build_ai_prompt(result, consequences, director)
+                narrative = await ai._chat(SYSTEM_PROMPT_IMPORT, prompt)
                 if narrative:
                     text += f"\n\n_{narrative}_"
             except Exception as e:
                 log.error(f"narrate_check error: {e}")
+
+        # Визуальные маркеры
+        if result.get("crit"):
+            text = "✨ **КРИТИЧЕСКИЙ УСПЕХ!**\n\n" + text
+        elif result.get("fumble"):
+            text = "💀 **КРИТИЧЕСКИЙ ПРОВАЛ!**\n\n" + text
 
         if dir_state.get("mode") == "plot":
             text += f"\n\n🎭 PLOT (напряжение: {dir_state['tension']}/100)"
@@ -697,7 +759,7 @@ async def free_action(message: Message):
         await message.answer(text, parse_mode="Markdown")
         return
 
-    # Если нет проверки — обычный нарратив
+    # ── 3. Нет проверки — обычный нарратив ──────────
     dir_state = director.update_state(f"игрок: {user_text[:60]}")
     save_director(message.chat.id, director)
 
@@ -713,13 +775,10 @@ async def free_action(message: Message):
         except Exception as e:
             log.error(f"generate_scene error: {e}")
 
-    # Фолбэк, если AI недоступен
     text = f"📝 {user_text}"
     if dir_state.get("mode") == "plot":
         text += f"\n\n🎭 PLOT (напряжение: {dir_state['tension']}/100)"
-    await message.a
-    nswer(text)
-
+    await message.answer(text)
 # ─── Запуск ───────────────────────────────────────────────
 
 async def main():
@@ -730,3 +789,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
