@@ -17,6 +17,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from actions import match_action
 
 from config import config
 from engine import Character, Dice, action_check, attack, STATS, STAT_NAMES
@@ -660,6 +661,64 @@ async def free_text_action(message: Message, state: FSMContext):
 
     await message.answer(text)
 
+from actions import match_action  # <-- импорт из нового файла
+
+@dp.message(F.text)
+async def free_action(message: Message):
+    char = await get_char(message)
+    if not char:
+        return
+
+    director = get_director(message.chat.id)
+    user_text = message.text.strip()
+
+    # Пытаемся найти подходящую проверку
+    check = match_action(user_text)
+
+    if check:
+        stat, dc, skill_name = check
+        result = action_check(char, stat, dc)
+        text = format_check(result)
+
+        dir_state = director.update_state(f"{skill_name}: {'успех' if result['success'] else 'провал'}", result)
+        save_director(message.chat.id, director)
+
+        if ai.available:
+            try:
+                narrative = await ai.narrate_check(result, director)
+                if narrative:
+                    text += f"\n\n_{narrative}_"
+            except Exception as e:
+                log.error(f"narrate_check error: {e}")
+
+        if dir_state.get("mode") == "plot":
+            text += f"\n\n🎭 PLOT (напряжение: {dir_state['tension']}/100)"
+
+        await message.answer(text, parse_mode="Markdown")
+        return
+
+    # Если нет проверки — обычный нарратив
+    dir_state = director.update_state(f"игрок: {user_text[:60]}")
+    save_director(message.chat.id, director)
+
+    if ai.available:
+        try:
+            narrative = await ai.generate_scene(user_text, director)
+            if narrative:
+                response = f"_{narrative}_"
+                if dir_state.get("mode") == "plot":
+                    response += f"\n\n🎭 PLOT (напряжение: {dir_state['tension']}/100)"
+                await message.answer(response, parse_mode="Markdown")
+                return
+        except Exception as e:
+            log.error(f"generate_scene error: {e}")
+
+    # Фолбэк, если AI недоступен
+    text = f"📝 {user_text}"
+    if dir_state.get("mode") == "plot":
+        text += f"\n\n🎭 PLOT (напряжение: {dir_state['tension']}/100)"
+    await message.a
+    nswer(text)
 
 # ─── Запуск ───────────────────────────────────────────────
 
